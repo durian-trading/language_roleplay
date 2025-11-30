@@ -5,8 +5,27 @@ from typing import Dict
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import logging
+from datetime import datetime
+
+# Configure logger
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="language-roleplay-backend")
+
+# Enable CORS for local dev
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # In-memory session store (compact - replace with DB in production)
 SESSIONS: Dict[str, Dict] = {}
@@ -40,6 +59,7 @@ async def post_message(request: Request):
     sid = body.get("session_id")
     text = body.get("text")
     model = body.get("model", "llama3")
+    logger.info(f"Received message: {text} for session: {sid}")
 
     if not text:
         raise HTTPException(status_code=400, detail="missing text")
