@@ -67,7 +67,7 @@ async def post_message(request: Request):
     text = body.get("text")
     model = body.get("model", "llama3")
     logger.info(f"Received message: {text} for session: {sid}")
-
+    logger.info(f"Request: {request}")
     if not text:
         raise HTTPException(status_code=400, detail="missing text")
 
@@ -77,10 +77,17 @@ async def post_message(request: Request):
 
     # Append the user message to session history
     session["messages"].append({"role": "user", "text": text})
+    learning_language = session.get("learning_language","French")
+    native_language = session.get("native_language","English")
+    situation = session.get("situation","a casual conversation")
 
     # Build a simple prompt from history (replace with structured message format if desired)
-    prompt_text = "\n".join([m["text"] for m in session["messages"]])
-
+    conversation = "\n".join([f"{m['role'].capitalize()}: {m['text']}" for m in session["messages"]])
+    prompt_text = (f"You are a helpful language learning assistant. "
+                   f"The user is learning {learning_language} and speaks {native_language} as their native language. "
+                   f"The situation is: {situation}.\n\n"
+                   f"{conversation}\n"
+                   f"Assistant:")
     url = f"http://{OLLAMA_HOST}/api/generate"
     payload = {"model": model, "prompt": prompt_text, "stream": True}
 
