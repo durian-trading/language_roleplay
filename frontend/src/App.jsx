@@ -1,10 +1,12 @@
 import React, { useEffect, useState, useRef } from 'react'
+import './App.css'
 
 export default function App() {
   const [sessionId, setSessionId] = useState(null)
   const [model, setModel] = useState('llama3')
   const [text, setText] = useState('')
   const [messages, setMessages] = useState([])
+  const [loading, setLoading] = useState(false)
   const chatRef = useRef(null)
 
   // Session setup fields
@@ -37,28 +39,41 @@ export default function App() {
   }, [messages])
 
   async function send() {
-    if (!text.trim()) return
+    if (!text.trim() || loading) return
     if (!sessionId) return alert('no session yet')
 
+    const userMessage = text.trim()
+    setText('')
+    setLoading(true)
+
     // Add user's message locally
-    setMessages(prev => [...prev, { role: 'user', text }])
-    const payload = { session_id: sessionId, text, model }
+    setMessages(prev => [...prev, { role: 'user', text: userMessage }])
+
+    // Prepare message object for assistant response
+    const assistantMessage = {
+      role: 'assistant',
+      reply: '',
+      translation: '',
+      feedback: '',
+      status: 'loading'
+    }
+    setMessages(prev => [...prev, assistantMessage])
 
     try {
-      const resp = await fetch('/api/message', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const resp = await fetch('/api/message', { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ session_id: sessionId, text: userMessage, model }) 
+      })
 
-      // Stream the response (server proxies Ollama streaming JSON lines)
       const reader = resp.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      let assistantText = ''
-
-      // Add empty assistant message to update progressively
-      setMessages(prev => [...prev, { role: 'assistant', text: '' }])
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
+
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
         buffer = lines.pop()
@@ -66,42 +81,72 @@ export default function App() {
         for (const line of lines) {
           if (!line.trim()) continue
           try {
-            const j = JSON.parse(line)
-            assistantText += j.response || ''
-            // Replace last assistant message with new text
-            setMessages(prev => {
-              const copy = [...prev]
-              for (let i = copy.length - 1; i >= 0; i--) {
-                if (copy[i].role === 'assistant') { copy[i] = { role: 'assistant', text: assistantText }; break }
-              }
-              return copy
-            })
-          } catch (e) { /* ignored */ }
+            const data = JSON.parse(line)
+            
+            if (data.type === 'reply') {
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].reply = data.text
+                return updated
+              })
+            } else if (data.type === 'translation') {
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].translation = data.text
+                return updated
+              })
+            } else if (data.type === 'feedback') {
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].feedback = data.text
+                return updated
+              })
+            } else if (data.type === 'done') {
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].status = 'done'
+                return updated
+              })
+            } else if (data.type === 'error') {
+              console.error('Stream error:', data.message)
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].status = 'error'
+                updated[updated.length - 1].error = data.message
+                return updated
+              })
+            }
+          } catch (e) {
+            console.warn('Failed to parse line:', line, e)
+          }
         }
       }
 
-      // final buffer
+      // Process any remaining buffer
       if (buffer.trim()) {
         try {
-          const j = JSON.parse(buffer)
-          assistantText += j.response || ''
-          setMessages(prev => {
-            const copy = [...prev]
-            for (let i = copy.length - 1; i >= 0; i--) {
-              if (copy[i].role === 'assistant') { copy[i] = { role: 'assistant', text: assistantText }; break }
-            }
-            return copy
-          })
+          const data = JSON.parse(buffer)
+          if (data.type === 'reply') {
+            setMessages(prev => {
+              const updated = [...prev]
+              updated[updated.length - 1].reply = data.text
+              return updated
+            })
+          }
         } catch (e) { }
       }
 
-      // Append assistant final message to session on server-side if needed (not implemented here)
-
     } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', text: 'Network error: ' + err }])
+      console.error('Failed to send message:', err)
+      setMessages(prev => {
+        const updated = [...prev]
+        updated[updated.length - 1].status = 'error'
+        updated[updated.length - 1].error = 'Failed to send message'
+        return updated
+      })
+    } finally {
+      setLoading(false)
     }
-
-    setText('')
   }
 
   return (
@@ -131,15 +176,48 @@ export default function App() {
 
           <div id="chat" ref={chatRef} style={{ border: '1px solid #ddd', height: 360, padding: 12, overflowY: 'auto', background: '#fafafa', marginBottom: 12 }}>
             {messages.map((m, i) => (
-              <div key={i} style={{ textAlign: m.role === 'user' ? 'right' : 'left', margin: '6px 0' }}>
-                <div style={{ display: 'inline-block', padding: '8px 10px', borderRadius: 6, background: m.role === 'user' ? '#e3f2fd' : '#fff' }}>{m.text}</div>
+              <div key={i} style={{ margin: '12px 0' }}>
+                {m.role === 'user' ? (
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ display: 'inline-block', padding: '8px 12px', borderRadius: 6, background: '#646cff', color: 'white' }}>{m.text}</div>
+                  </div>
+                ) : (
+                  <div style={{ background: '#f0f0f0', padding: 12, borderRadius: 6 }}>
+                    {m.reply && (
+                      <div style={{ marginBottom: 8, padding: 8, background: '#e8f4f8', borderLeft: '3px solid #2196F3', borderRadius: 4 }}>
+                        <strong style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: '#1976D2' }}>Reply:</strong>
+                        <div>{m.reply}</div>
+                      </div>
+                    )}
+                    {m.translation && (
+                      <div style={{ marginBottom: 8, padding: 8, background: '#f0f8e8', borderLeft: '3px solid #4CAF50', borderRadius: 4 }}>
+                        <strong style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: '#388E3C' }}>Translation:</strong>
+                        <div>{m.translation}</div>
+                      </div>
+                    )}
+                    {m.feedback && (
+                      <div style={{ padding: 8, background: '#fff8e1', borderLeft: '3px solid #FF9800', borderRadius: 4 }}>
+                        <strong style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: '#F57C00' }}>Feedback:</strong>
+                        <div>{m.feedback}</div>
+                      </div>
+                    )}
+                    {m.status === 'loading' && !m.reply && (
+                      <div style={{ fontStyle: 'italic', color: '#666' }}>Generating response...</div>
+                    )}
+                    {m.status === 'error' && (
+                      <div style={{ color: '#d32f2f' }}>Error: {m.error}</div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
 
           <div style={{ display: 'flex', gap: 8 }}>
-            <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Type and press Enter" />
-            <button onClick={send}>Send</button>
+            <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Type and press Enter" disabled={loading} style={{ flex: 1, padding: 8 }} />
+            <button onClick={send} disabled={loading} style={{ padding: '8px 16px', cursor: loading ? 'not-allowed' : 'pointer' }}>
+              {loading ? 'Sending...' : 'Send'}
+            </button>
           </div>
         </>
       )}

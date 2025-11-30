@@ -1,6 +1,7 @@
 import os
 import uuid
 from typing import Dict
+import json
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -56,18 +57,33 @@ async def get_session(session_id: str):
     return s
 
 
+async def call_ollama(prompt: str, model: str = "llama3") -> str:
+    """Helper function to call Ollama and return the complete response text."""
+    url = f"http://{OLLAMA_HOST}/api/generate"
+    payload = {"model": model, "prompt": prompt, "stream": False}
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(url, json=payload)
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=resp.status_code, detail=f"Ollama error: {resp.text}")
+        data = resp.json()
+        return data.get("response", "")
+
+
 @app.post("/api/message")
 async def post_message(request: Request):
-    """Accepts JSON {session_id, text, model?} and returns a streamed response from the LLM.
-
-    The backend will forward the LLM streaming output (newline-delimited JSON lines) directly.
+    """Accepts JSON {session_id, text, model?} and returns three outputs:
+    1. Assistant reply in learning language
+    2. Translation of reply in native language
+    3. Feedback on user's message
     """
     body = await request.json()
     sid = body.get("session_id")
     text = body.get("text")
     model = body.get("model", "llama3")
+    
     logger.info(f"Received message: {text} for session: {sid}")
-    logger.info(f"Request: {request}")
+    
     if not text:
         raise HTTPException(status_code=400, detail="missing text")
 
@@ -77,37 +93,65 @@ async def post_message(request: Request):
 
     # Append the user message to session history
     session["messages"].append({"role": "user", "text": text})
-    learning_language = session.get("learning_language","French")
-    native_language = session.get("native_language","English")
-    situation = session.get("situation","a casual conversation")
+    
+    learning_language = session.get("learning_language", "French")
+    native_language = session.get("native_language", "English")
+    situation = session.get("situation", "a casual conversation")
 
-    # Build a simple prompt from history (replace with structured message format if desired)
+    # Build conversation history
     conversation = "\n".join([f"{m['role'].capitalize()}: {m['text']}" for m in session["messages"]])
-    prompt_text = (f"You are a helpful language learning assistant. "
-                   f"The user is learning {learning_language} and speaks {native_language} as their native language. "
-                   f"The situation is: {situation}.\n\n"
-                   f"{conversation}\n"
-                   f"Assistant:")
-    url = f"http://{OLLAMA_HOST}/api/generate"
-    payload = {"model": model, "prompt": prompt_text, "stream": True}
+
+    # PROMPT 1: Generate assistant's reply in learning language
+    reply_prompt = (
+        f"You are roleplaying in a language learning scenario. "
+        f"The user is learning {learning_language}. "
+        f"The situation is: {situation}.\n\n"
+        f"Conversation so far:\n{conversation}\n\n"
+        f"Reply ONLY in {learning_language} (keep it natural and appropriate for the roleplay situation). "
+        f"Do not add any translations or explanations, just the reply."
+    )
+
+    # PROMPT 2: Provide feedback on user's message
+    feedback_prompt = (
+        f"You are a language learning assistant. "
+        f"The user is learning {learning_language} and their native language is {native_language}. "
+        f"The user just said: \"{text}\"\n\n"
+        f"Provide brief, constructive feedback on their message in {native_language}. "
+        f"Comment on grammar, vocabulary choice, or suggest improvements if needed. "
+        f"If the message is correct, give encouragement. Keep it concise (2-3 sentences max)."
+    )
 
     async def stream_generator():
-        async with httpx.AsyncClient(timeout=None) as client:
-            try:
-                async with client.stream("POST", url, json=payload) as resp:
-                    if resp.status_code >= 400:
-                        # forward error
-                        text = await resp.aread()
-                        yield f"ERROR {resp.status_code}: {text.decode()}\n"
-                        return
+        try:
+            # Step 1: Generate reply in learning language
+            yield json.dumps({"type": "status", "message": "Generating reply..."}) + "\n"
+            reply_text = await call_ollama(reply_prompt, model)
+            
+            # Save assistant reply to history
+            session["messages"].append({"role": "assistant", "text": reply_text})
+            
+            yield json.dumps({"type": "reply", "text": reply_text}) + "\n"
 
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
-                        # Forward each newline-delimited JSON line to the client
-                        yield line + "\n"
-            except Exception as e:
-                yield f"ERROR: {e}\n"
+            # Step 2: Translate reply to native language
+            yield json.dumps({"type": "status", "message": "Translating..."}) + "\n"
+            translation_prompt = (
+                f"Translate the following {learning_language} text to {native_language}. "
+                f"Provide ONLY the translation, no explanations:\n\n\"{reply_text}\""
+            )
+            translation = await call_ollama(translation_prompt, model)
+            yield json.dumps({"type": "translation", "text": translation}) + "\n"
+
+            # Step 3: Generate feedback on user's message
+            yield json.dumps({"type": "status", "message": "Analyzing your message..."}) + "\n"
+            feedback = await call_ollama(feedback_prompt, model)
+            yield json.dumps({"type": "feedback", "text": feedback}) + "\n"
+
+            # Signal completion
+            yield json.dumps({"type": "done"}) + "\n"
+            
+        except Exception as e:
+            logger.error(f"Error in stream_generator: {e}")
+            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
 
     return StreamingResponse(stream_generator(), media_type="application/json")
 
