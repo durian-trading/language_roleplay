@@ -49,6 +49,24 @@ async def create_session(payload: Dict):
     return {"session_id": sid}
 
 
+@app.post("/api/suggest-situation")
+async def suggest_situation():
+    """Generate a random roleplay situation suggestion"""
+    prompt = (
+        "Generate a single short roleplay situation description suitable for language learning practice. "
+        "Examples: 'Ordering food at a restaurant', 'Asking for directions in a new city', 'Making a hotel reservation'. "
+        "Provide only the situation description, nothing else. Keep it to one sentence, 5-15 words."
+    )
+    try:
+        suggestion = await call_ollama(prompt, "llama3")
+        # Clean up the response (remove quotes, extra whitespace, etc)
+        suggestion = suggestion.strip().strip('"\'').strip()
+        return {"suggestion": suggestion}
+    except Exception as e:
+        logger.error(f"Failed to generate suggestion: {e}")
+        return {"suggestion": "Ordering food at a restaurant"}
+
+
 @app.get("/api/session/{session_id}")
 async def get_session(session_id: str):
     s = SESSIONS.get(session_id)
@@ -117,8 +135,7 @@ async def post_message(request: Request):
         f"The user is learning {learning_language} and their native language is {native_language}. "
         f"The user just said: \"{text}\"\n\n"
         f"Provide brief, constructive feedback on their message in {native_language}. "
-        f"Comment on grammar, vocabulary choice, or suggest improvements if needed. "
-        f"If the message is correct, give encouragement. Keep it concise (2-3 sentences max)."
+        f"Comment on grammar, vocabulary choice, or suggest improvements if needed. Keep the feedback concise. "
     )
 
     async def stream_generator():

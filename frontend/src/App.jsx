@@ -7,6 +7,7 @@ export default function App() {
   const [text, setText] = useState('')
   const [messages, setMessages] = useState([])
   const [loading, setLoading] = useState(false)
+  const [showTranslations, setShowTranslations] = useState({})
   const chatRef = useRef(null)
 
   // Session setup fields
@@ -14,6 +15,25 @@ export default function App() {
   const [nativeLanguage, setNativeLanguage] = useState('English')
   const [situation, setSituation] = useState('')
   const [sessionStarted, setSessionStarted] = useState(false)
+  const [loadingSuggestion, setLoadingSuggestion] = useState(false)
+
+  useEffect(() => {
+    // Generate a situation suggestion on load
+    const getSuggestion = async () => {
+      setLoadingSuggestion(true)
+      try {
+        const resp = await fetch('/api/suggest-situation', { method: 'POST' })
+        const data = await resp.json()
+        setSituation(data.suggestion || '')
+      } catch (err) {
+        console.error('Failed to get suggestion:', err)
+        setSituation('Ordering food at a restaurant')
+      } finally {
+        setLoadingSuggestion(false)
+      }
+    }
+    getSuggestion()
+  }, [])
 
   async function startSession() {
     if (!learningLanguage || !nativeLanguage || !situation.trim()) {
@@ -164,60 +184,99 @@ export default function App() {
           </div>
           <div style={{ marginBottom: 12 }}>
             <label>Describe the situation:</label>
-            <textarea value={situation} onChange={e => setSituation(e.target.value)} placeholder="e.g. Ordering food at a restaurant" style={{ width: '100%', height: 80, padding: 8 }} />
+            <textarea 
+              value={situation} 
+              onChange={e => setSituation(e.target.value)} 
+              placeholder={loadingSuggestion ? "Loading suggestion..." : "e.g. Ordering food at a restaurant"} 
+              style={{ width: '100%', height: 80, padding: 8 }}
+              disabled={loadingSuggestion}
+            />
           </div>
           <button onClick={startSession}>Start Roleplay</button>
         </div>
       ) : (
         <>
-          <div style={{ marginBottom: 12 }}>
-            <label>Model: <input value={model} onChange={e => setModel(e.target.value)} /></label>
+          <div style={{ marginBottom: 12, padding: 12, background: '#f5f5f5', borderRadius: 6, fontSize: '0.9rem', display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+            <div><strong>Learning:</strong> {learningLanguage}</div>
+            <div><strong>Native:</strong> {nativeLanguage}</div>
+            <div style={{ flex: 1 }}><strong>Situation:</strong> {situation}</div>
+            <div><strong>Model:</strong> <input value={model} onChange={e => setModel(e.target.value)} style={{ width: 100, padding: '2px 6px', fontSize: '0.9rem' }} /></div>
           </div>
 
-          <div id="chat" ref={chatRef} style={{ border: '1px solid #ddd', height: 360, padding: 12, overflowY: 'auto', background: '#fafafa', marginBottom: 12 }}>
-            {messages.map((m, i) => (
-              <div key={i} style={{ margin: '12px 0' }}>
-                {m.role === 'user' ? (
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ display: 'inline-block', padding: '8px 12px', borderRadius: 6, background: '#646cff', color: 'white' }}>{m.text}</div>
+          <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 240px)', minHeight: 500 }}>
+            {/* Main chat area */}
+            <div style={{ flex: 2, display: 'flex', flexDirection: 'column' }}>
+              <div id="chat" ref={chatRef} style={{ flex: 1, border: '1px solid #ddd', padding: 12, overflowY: 'auto', background: '#fafafa', marginBottom: 12, borderRadius: 8 }}>
+                {messages.map((m, i) => (
+                  <div key={i} style={{ margin: '12px 0' }}>
+                    {m.role === 'user' ? (
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ display: 'inline-block', padding: '8px 12px', borderRadius: 6, background: '#646cff', color: 'white', maxWidth: '70%' }}>{m.text}</div>
+                      </div>
+                    ) : (
+                      <div style={{ maxWidth: '70%' }}>
+                        {m.reply && (
+                          <div style={{ padding: 10, background: '#fff', borderRadius: 6, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                            <div>{m.reply}</div>
+                            {m.translation && (
+                              <button 
+                                onClick={() => setShowTranslations(prev => ({ ...prev, [i]: !prev[i] }))}
+                                style={{ marginTop: 8, padding: '4px 8px', fontSize: '0.85rem', background: '#4CAF50' }}
+                              >
+                                {showTranslations[i] ? '🔼 Hide translation' : '🔽 Show translation'}
+                              </button>
+                            )}
+                            {showTranslations[i] && m.translation && (
+                              <div style={{ marginTop: 8, padding: 8, background: '#f0f8e8', borderLeft: '3px solid #4CAF50', borderRadius: 4, fontSize: '0.9rem' }}>
+                                <strong style={{ fontSize: '0.8rem', textTransform: 'uppercase', color: '#388E3C' }}>Translation:</strong>
+                                <div>{m.translation}</div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {m.status === 'loading' && !m.reply && (
+                          <div style={{ fontStyle: 'italic', color: '#666', padding: 10 }}>Generating response...</div>
+                        )}
+                        {m.status === 'error' && (
+                          <div style={{ color: '#d32f2f', padding: 10 }}>Error: {m.error}</div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <div style={{ background: '#f0f0f0', padding: 12, borderRadius: 6 }}>
-                    {m.reply && (
-                      <div style={{ marginBottom: 8, padding: 8, background: '#e8f4f8', borderLeft: '3px solid #2196F3', borderRadius: 4 }}>
-                        <strong style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: '#1976D2' }}>Reply:</strong>
-                        <div>{m.reply}</div>
-                      </div>
-                    )}
-                    {m.translation && (
-                      <div style={{ marginBottom: 8, padding: 8, background: '#f0f8e8', borderLeft: '3px solid #4CAF50', borderRadius: 4 }}>
-                        <strong style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: '#388E3C' }}>Translation:</strong>
-                        <div>{m.translation}</div>
-                      </div>
-                    )}
-                    {m.feedback && (
-                      <div style={{ padding: 8, background: '#fff8e1', borderLeft: '3px solid #FF9800', borderRadius: 4 }}>
-                        <strong style={{ fontSize: '0.85rem', textTransform: 'uppercase', color: '#F57C00' }}>Feedback:</strong>
-                        <div>{m.feedback}</div>
-                      </div>
-                    )}
-                    {m.status === 'loading' && !m.reply && (
-                      <div style={{ fontStyle: 'italic', color: '#666' }}>Generating response...</div>
-                    )}
-                    {m.status === 'error' && (
-                      <div style={{ color: '#d32f2f' }}>Error: {m.error}</div>
-                    )}
-                  </div>
-                )}
+                ))}
               </div>
-            ))}
-          </div>
 
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Type and press Enter" disabled={loading} style={{ flex: 1, padding: 8 }} />
-            <button onClick={send} disabled={loading} style={{ padding: '8px 16px', cursor: loading ? 'not-allowed' : 'pointer' }}>
-              {loading ? 'Sending...' : 'Send'}
-            </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Type and press Enter" disabled={loading} style={{ flex: 1, padding: 10 }} />
+                <button onClick={send} disabled={loading} style={{ padding: '10px 20px', cursor: loading ? 'not-allowed' : 'pointer' }}>
+                  {loading ? 'Sending...' : 'Send'}
+                </button>
+              </div>
+            </div>
+
+            {/* Feedback sidebar */}
+            <div style={{ flex: 1, border: '1px solid #ddd', borderRadius: 8, padding: 16, background: '#fff8e1', overflowY: 'auto' }}>
+              <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', color: '#F57C00' }}>📝 Feedback</h3>
+              {messages.filter(m => m.role === 'assistant' && m.feedback).length === 0 ? (
+                <p style={{ color: '#999', fontStyle: 'italic' }}>Feedback will appear here after you send messages</p>
+              ) : (
+                messages.map((m, i) => {
+                  if (m.role === 'assistant' && m.feedback) {
+                    // Find corresponding user message
+                    const userMsg = messages[i - 1]
+                    return (
+                      <div key={i} style={{ marginBottom: 16, padding: 10, background: 'white', borderRadius: 6, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                        <div style={{ fontSize: '0.85rem', color: '#666', marginBottom: 4, fontStyle: 'italic' }}>
+                          On: "{userMsg?.text}"
+                        </div>
+                        <div style={{ fontSize: '0.95rem' }}>{m.feedback}</div>
+                      </div>
+                    )
+                  }
+                  return null
+                })
+              )}
+            </div>
           </div>
         </>
       )}
