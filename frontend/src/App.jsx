@@ -7,12 +7,30 @@ export default function App() {
   const [messages, setMessages] = useState([])
   const chatRef = useRef(null)
 
-  useEffect(() => {
-    // Create a session on load
-    fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language: 'spanish' }) })
-      .then(r => r.json())
-      .then(d => setSessionId(d.session_id))
-  }, [])
+  // Session setup fields
+  const [learningLanguage, setLearningLanguage] = useState('Spanish')
+  const [nativeLanguage, setNativeLanguage] = useState('English')
+  const [situation, setSituation] = useState('')
+  const [sessionStarted, setSessionStarted] = useState(false)
+
+  async function startSession() {
+    if (!learningLanguage || !nativeLanguage || !situation.trim()) {
+      alert('Please fill in all fields')
+      return
+    }
+    const resp = await fetch('/api/session', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ 
+        learning_language: learningLanguage, 
+        native_language: nativeLanguage, 
+        situation: situation 
+      }) 
+    })
+    const data = await resp.json()
+    setSessionId(data.session_id)
+    setSessionStarted(true)
+  }
 
   useEffect(() => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
@@ -89,22 +107,42 @@ export default function App() {
   return (
     <div style={{ padding: 20, maxWidth: 900, margin: '0 auto' }}>
       <h2>Language Roleplay — Minimal client</h2>
-      <div style={{ marginBottom: 12 }}>
-        <label>Model: <input value={model} onChange={e => setModel(e.target.value)} /></label>
-      </div>
 
-      <div id="chat" ref={chatRef} style={{ border: '1px solid #ddd', height: 360, padding: 12, overflowY: 'auto', background: '#fafafa', marginBottom: 12 }}>
-        {messages.map((m, i) => (
-          <div key={i} style={{ textAlign: m.role === 'user' ? 'right' : 'left', margin: '6px 0' }}>
-            <div style={{ display: 'inline-block', padding: '8px 10px', borderRadius: 6, background: m.role === 'user' ? '#e3f2fd' : '#fff' }}>{m.text}</div>
+      {!sessionStarted ? (
+        <div style={{ marginBottom: 20 }}>
+          <h3>Start a new session</h3>
+          <div style={{ marginBottom: 12 }}>
+            <label>Language you're learning: <input value={learningLanguage} onChange={e => setLearningLanguage(e.target.value)} placeholder="e.g. Spanish" /></label>
           </div>
-        ))}
-      </div>
+          <div style={{ marginBottom: 12 }}>
+            <label>Your native language: <input value={nativeLanguage} onChange={e => setNativeLanguage(e.target.value)} placeholder="e.g. English" /></label>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label>Describe the situation:</label>
+            <textarea value={situation} onChange={e => setSituation(e.target.value)} placeholder="e.g. Ordering food at a restaurant" style={{ width: '100%', height: 80, padding: 8 }} />
+          </div>
+          <button onClick={startSession}>Start Roleplay</button>
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <label>Model: <input value={model} onChange={e => setModel(e.target.value)} /></label>
+          </div>
 
-      <div style={{ display: 'flex', gap: 8 }}>
-        <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Type and press Enter" />
-        <button onClick={send}>Send</button>
-      </div>
+          <div id="chat" ref={chatRef} style={{ border: '1px solid #ddd', height: 360, padding: 12, overflowY: 'auto', background: '#fafafa', marginBottom: 12 }}>
+            {messages.map((m, i) => (
+              <div key={i} style={{ textAlign: m.role === 'user' ? 'right' : 'left', margin: '6px 0' }}>
+                <div style={{ display: 'inline-block', padding: '8px 10px', borderRadius: 6, background: m.role === 'user' ? '#e3f2fd' : '#fff' }}>{m.text}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Type and press Enter" />
+            <button onClick={send}>Send</button>
+          </div>
+        </>
+      )}
     </div>
   )
 }

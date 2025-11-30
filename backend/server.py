@@ -35,9 +35,16 @@ OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "127.0.0.1:11435")
 
 @app.post("/api/session")
 async def create_session(payload: Dict):
-    """Create a new session. Payload can include: language, roleplay_meta"""
+    """Create a new session. Payload can include: learning_language, native_language, situation"""
     sid = str(uuid.uuid4())
-    SESSIONS[sid] = {"id": sid, "language": payload.get("language"), "roleplay_meta": payload.get("roleplay_meta"), "messages": []}
+    SESSIONS[sid] = {
+        "id": sid, 
+        "learning_language": payload.get("learning_language"), 
+        "native_language": payload.get("native_language"),
+        "situation": payload.get("situation"),
+        "messages": []
+    }
+    logger.info(f"Created session {sid}: learning={payload.get('learning_language')}, native={payload.get('native_language')}, situation={payload.get('situation')}")
     return {"session_id": sid}
 
 
