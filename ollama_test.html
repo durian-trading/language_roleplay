@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Ollama Chat</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Helvetica, Arial; padding: 20px; max-width: 800px; margin: 0 auto; }
+      #chat { border: 1px solid #ccc; height: 400px; overflow-y: auto; padding: 10px; margin-bottom: 10px; background: #fafafa; }
+      .msg { margin: 8px 0; padding: 8px; border-radius: 4px; }
+      .user { background: #e3f2fd; text-align: right; }
+      .assistant { background: #f5f5f5; }
+      input[type=text] { width: 100%; padding: 8px; }
+      button { padding: 8px 16px; cursor: pointer; }
+      label { display: block; margin: 10px 0 5px 0; }
+    </style>
+  </head>
+  <body>
+    <h2>Ollama Chat</h2>
+
+    <label>Model: <input id="model" type="text" value="llama3" /></label>
+
+    <div id="chat"></div>
+
+    <form id="form">
+      <input id="prompt" type="text" placeholder="Type your message..." />
+      <button type="submit">Send</button>
+    </form>
+
+    <script>
+      const form = document.getElementById('form');
+      const chat = document.getElementById('chat');
+      let conversationHistory = '';
+
+      function addMessage(role, text) {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'msg ' + role;
+        msgDiv.textContent = text;
+        chat.appendChild(msgDiv);
+        chat.scrollTop = chat.scrollHeight;
+      }
+
+      form.addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const model = document.getElementById('model').value.trim();
+        const userInput = document.getElementById('prompt').value.trim();
+
+        if (!userInput) return;
+
+        addMessage('user', userInput);
+        document.getElementById('prompt').value = '';
+
+        // Build prompt with conversation history
+        const fullPrompt = conversationHistory + (conversationHistory ? '\n' : '') + userInput;
+
+        try {
+          const resp = await fetch('http://localhost:11435/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model, prompt: fullPrompt })
+          });
+
+          let assistantReply = '';
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          const msgDiv = document.createElement('div');
+          msgDiv.className = 'msg assistant';
+          chat.appendChild(msgDiv);
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+              if (line.trim()) {
+                try {
+                  const json = JSON.parse(line);
+                  assistantReply += json.response || '';
+                  msgDiv.textContent = assistantReply;
+                  chat.scrollTop = chat.scrollHeight;
+                } catch (e) {}
+              }
+            }
+          }
+
+          if (buffer.trim()) {
+            try {
+              const json = JSON.parse(buffer);
+              assistantReply += json.response || '';
+              msgDiv.textContent = assistantReply;
+            } catch (e) {}
+          }
+
+          // Update conversation history
+          conversationHistory = fullPrompt + '\n' + assistantReply;
+        } catch (err) {
+          addMessage('assistant', 'Error: ' + err);
+        }
+      });
+    </script>
+  </body>
+</html>
