@@ -10,28 +10,36 @@ Structure
 
 Quick start (development)
 
-1) Start your local Ollama server (example):
+Launch 4 servers in separate terminals:
 
-   OLLAMA_HOST=127.0.0.1:11435 ollama serve
+**Terminal 1 - Ollama (local models, port 11435):**
+```bash
+OLLAMA_HOST=127.0.0.1:11435 ollama serve
+```
 
-2) Backend (proxy + session manager)
+**Terminal 2 - Backend API (FastAPI, port 8000):**
+```bash
+cd backend
+source venv/bin/activate
+export OLLAMA_HOST=127.0.0.1:11435
+export GEMINI_API_KEY=your_key_here  # Optional, for Gemini models
+export PREVIEW_MODELS_ALLOWED=0      # Set to 1 to enable Gemini preview models
+python server.py
+```
 
-   cd backend
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   export OLLAMA_HOST=127.0.0.1:11435
-   python server.py
+**Terminal 3 - Frontend (Vite dev server, port 5173):**
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-   Backend runs on http://127.0.0.1:8000 by default.
+**Terminal 4 - Ngrok (optional, for external access):**
+```bash
+ngrok http 8000
+```
 
-3) Frontend (Vite)
-
-   cd frontend
-   npm install
-   npm run dev
-
-   Open the browser to the Vite dev URL (usually http://localhost:5173)
+Open browser to http://localhost:5173
 
 Notes
 - The frontend is intentionally minimal — it creates a session and posts user messages to `/api/message`. The backend forwards streaming newline-delimited JSON lines from the LLM (Ollama) to the frontend which concatenates `response` fields.

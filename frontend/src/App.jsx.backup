@@ -1,0 +1,499 @@
+import React, { useEffect, useState, useRef } from 'react'
+import './App.css'
+
+export default function App() {
+  const [sessionId, setSessionId] = useState(null)
+  const [model, setModel] = useState('qwen2.5:7b-instruct')
+  const [text, setText] = useState('')
+  const [messages, setMessages] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [showTranslations, setShowTranslations] = useState({})
+  const chatRef = useRef(null)
+  const [isListening, setIsListening] = useState(false)
+  const recognitionRef = useRef(null)
+  const [autoplayVoice, setAutoplayVoice] = useState(true)
+  const [voices, setVoices] = useState([])
+  const [voicesReady, setVoicesReady] = useState(false)
+  const [spokenMessageIds, setSpokenMessageIds] = useState(new Set())
+
+  // Session setup fields
+  const [learningLanguage, setLearningLanguage] = useState('Spanish')
+  const [nativeLanguage, setNativeLanguage] = useState('English')
+  const [situation, setSituation] = useState('')
+  const [sessionStarted, setSessionStarted] = useState(false)
+  const [loadingSuggestion, setLoadingSuggestion] = useState(false)
+
+  useEffect(() => {
+    // Generate a situation suggestion on load
+    const getSuggestion = async () => {
+      setLoadingSuggestion(true)
+      try {
+        const resp = await fetch('/api/suggest-situation', { method: 'POST' })
+        const data = await resp.json()
+        setSituation(data.suggestion || '')
+      } catch (err) {
+        console.error('Failed to get suggestion:', err)
+        setSituation('Ordering food at a restaurant')
+      } finally {
+        setLoadingSuggestion(false)
+      }
+    }
+    getSuggestion()
+  }, [])
+
+  async function startSession() {
+    if (!learningLanguage || !nativeLanguage || !situation.trim()) {
+      alert('Please fill in all fields')
+      return
+    }
+    const resp = await fetch('/api/session', { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ 
+        learning_language: learningLanguage, 
+        native_language: nativeLanguage, 
+        situation: situation,
+        model: model
+      }) 
+    })
+    const data = await resp.json()
+    setSessionId(data.session_id)
+    
+    // Display initial message if present
+      if (data.initial_message) {
+        const initial = { role: 'assistant', reply: data.initial_message, translation: data.initial_translation || '', feedback: '', status: 'done' }
+      setMessages([initial])
+      if (autoplayVoice) {
+        speakText(data.initial_message, learningLanguage)
+      }
+    }
+    
+    setSessionStarted(true)
+  }
+
+  useEffect(() => {
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
+  }, [messages])
+
+  // Autoplay voice for new assistant replies
+  useEffect(() => {
+    if (!autoplayVoice) return
+    if (!messages.length) return
+    const last = messages[messages.length - 1]
+    // Only speak once the message is complete to avoid repeated cancels during streaming
+    if (last && last.role === 'assistant' && last.reply && last.status === 'done') {
+      const messageId = messages.length - 1
+      // Only speak if we haven't spoken this message yet
+      if (!spokenMessageIds.has(messageId)) {
+        setSpokenMessageIds(prev => new Set(prev).add(messageId))
+        speakText(last.reply, learningLanguage)
+      }
+    }
+  }, [messages, autoplayVoice, learningLanguage, spokenMessageIds])
+
+  async function send() {
+    if (!text.trim() || loading) return
+    if (!sessionId) return alert('no session yet')
+
+    const userMessage = text.trim()
+    setText('')
+    setLoading(true)
+
+    // Add user's message locally
+    setMessages(prev => [...prev, { role: 'user', text: userMessage }])
+
+    // Prepare message object for assistant response
+    const assistantMessage = {
+      role: 'assistant',
+      reply: '',
+      translation: '',
+      feedback: '',
+      status: 'loading'
+    }
+    setMessages(prev => [...prev, assistantMessage])
+
+    try {
+      const resp = await fetch('/api/message', { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify({ session_id: sessionId, text: userMessage, model }) 
+      })
+
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+
+        for (const line of lines) {
+          if (!line.trim()) continue
+          try {
+            const data = JSON.parse(line)
+            
+            if (data.type === 'reply') {
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].reply = data.text
+                return updated
+              })
+            } else if (data.type === 'translation') {
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].translation = data.text
+                return updated
+              })
+            } else if (data.type === 'feedback') {
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].feedback = data.text
+                return updated
+              })
+            } else if (data.type === 'done') {
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].status = 'done'
+                return updated
+              })
+            } else if (data.type === 'error') {
+              console.error('Stream error:', data.message)
+              setMessages(prev => {
+                const updated = [...prev]
+                updated[updated.length - 1].status = 'error'
+                updated[updated.length - 1].error = data.message
+                return updated
+              })
+            }
+          } catch (e) {
+            console.warn('Failed to parse line:', line, e)
+          }
+        }
+      }
+
+      // Process any remaining buffer
+      if (buffer.trim()) {
+        try {
+          const data = JSON.parse(buffer)
+          if (data.type === 'reply') {
+            setMessages(prev => {
+              const updated = [...prev]
+              updated[updated.length - 1].reply = data.text
+              return updated
+            })
+          }
+        } catch (e) { }
+      }
+
+    } catch (err) {
+      console.error('Failed to send message:', err)
+      setMessages(prev => {
+        const updated = [...prev]
+        updated[updated.length - 1].status = 'error'
+        updated[updated.length - 1].error = 'Failed to send message'
+        return updated
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Text-to-Speech: speak assistant text
+  const speakText = (textToSpeak, langCode, _retry = 0) => {
+    if (!window.speechSynthesis) {
+      console.warn('Speech synthesis not supported')
+      return
+    }
+    const utter = new SpeechSynthesisUtterance(textToSpeak)
+    const resolvedLang = normalizeLangCode(langCode)
+    if (resolvedLang) utter.lang = resolvedLang
+    const voice = pickBestVoice(resolvedLang)
+    // If voices aren’t loaded yet, retry briefly
+    if (!voice && !voicesReady && _retry < 5) {
+      setTimeout(() => speakText(textToSpeak, langCode, _retry + 1), 250)
+      return
+    }
+    if (voice) utter.voice = voice
+    utter.rate = 0.95
+    utter.pitch = 1.0
+    utter.volume = 1.0
+    utter.onstart = () => {
+      console.log('TTS start', { lang: utter.lang, voice: utter.voice?.name })
+    }
+    utter.onend = () => {
+      console.log('TTS end')
+    }
+    utter.onerror = (e) => {
+      console.error('TTS error', e)
+    }
+    // Only cancel if we're actually going to speak something new
+    // Don't cancel during initialization or if paused
+    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+      console.log('Canceling previous speech to play new one')
+      window.speechSynthesis.cancel()
+      // Wait a bit after cancel before speaking
+      setTimeout(() => {
+        try {
+          console.log('Attempting to speak:', textToSpeak.substring(0, 30) + '...')
+          window.speechSynthesis.speak(utter)
+        } catch (e) {
+          console.error('speechSynthesis.speak threw', e)
+        }
+      }, 200)
+    } else {
+      // Resume if paused due to autoplay policies until user gesture.
+      if (window.speechSynthesis.paused) {
+        try { window.speechSynthesis.resume() } catch {}
+      }
+      // Small delay gives browsers time to settle voices and reduces canceled errors.
+      setTimeout(() => {
+        try {
+          console.log('Attempting to speak:', textToSpeak.substring(0, 30) + '...')
+          window.speechSynthesis.speak(utter)
+        } catch (e) {
+          console.error('speechSynthesis.speak threw', e)
+        }
+      }, 150)
+    }
+  }
+
+  // Speech-to-Text: start mic and transcribe into input box
+  const startListening = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      alert('Speech recognition not supported in this browser. Try Chrome.')
+      return
+    }
+    if (isListening) return
+    const recognition = new SpeechRecognition()
+    recognition.lang = normalizeLangCode(learningLanguage) || 'en-US'
+    recognition.interimResults = true
+    recognition.maxAlternatives = 1
+    recognition.onresult = (event) => {
+      let transcript = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript
+      }
+      setText(transcript)
+    }
+    recognition.onerror = (e) => {
+      console.error('Speech recognition error', e)
+      setIsListening(false)
+    }
+    recognition.onend = () => {
+      setIsListening(false)
+    }
+    recognitionRef.current = recognition
+    recognition.start()
+    setIsListening(true)
+  }
+
+  const stopListening = () => {
+    const recognition = recognitionRef.current
+    if (recognition) {
+      recognition.stop()
+      recognitionRef.current = null
+    }
+    setIsListening(false)
+  }
+
+  // Map friendly language names to BCP-47 codes
+  const normalizeLangCode = (lang) => {
+    if (!lang) return 'en-US'
+    const l = String(lang).toLowerCase()
+    const map = {
+      'english': 'en-US', 'en': 'en-US',
+      'spanish': 'es-ES', 'es': 'es-ES',
+      'french': 'fr-FR', 'fr': 'fr-FR',
+      'german': 'de-DE', 'de': 'de-DE',
+      'italian': 'it-IT', 'it': 'it-IT',
+      'portuguese': 'pt-PT', 'pt': 'pt-PT', 'pt-br': 'pt-BR', 'portuguese (brazil)': 'pt-BR',
+      'japanese': 'ja-JP', 'ja': 'ja-JP',
+      'chinese': 'zh-CN', 'zh': 'zh-CN', 'mandarin': 'zh-CN',
+      'korean': 'ko-KR', 'ko': 'ko-KR',
+      'russian': 'ru-RU', 'ru': 'ru-RU',
+      'arabic': 'ar-SA', 'ar': 'ar-SA',
+      'indonesian': 'id-ID', 'id': 'id-ID', 'bahasa indonesia': 'id-ID'
+    }
+    return map[l] || lang
+  }
+
+  // Choose a voice that matches the target language
+  const pickBestVoice = (targetLang) => {
+    if (!voices || voices.length === 0) return null
+    if (!targetLang) return null
+    let v = voices.find(v => v.lang === targetLang)
+    if (v) return v
+    const prefix = targetLang.split('-')[0]
+    v = voices.find(v => v.lang && v.lang.toLowerCase().startsWith(prefix.toLowerCase()))
+    if (v) return v
+    if (prefix !== 'en') {
+      v = voices.find(v => v.lang && !v.lang.toLowerCase().startsWith('en'))
+      if (v) return v
+    }
+    return voices[0]
+  }
+
+  // Load voices for TTS
+  useEffect(() => {
+    const loadVoices = () => {
+      if (window.speechSynthesis) {
+        const list = window.speechSynthesis.getVoices() || []
+        setVoices(list)
+        setVoicesReady(list.length > 0)
+      }
+    }
+    loadVoices()
+    if (window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = loadVoices
+    }
+    return () => {
+      if (window.speechSynthesis) {
+        window.speechSynthesis.onvoiceschanged = null
+      }
+    }
+  }, [])
+
+  return (
+    <div style={{ padding: 20, maxWidth: 900, margin: '0 auto' }}>
+      <h2>Language Roleplay — Minimal client</h2>
+
+      {!sessionStarted ? (
+        <div style={{ marginBottom: 20 }}>
+          <h3>Start a new session</h3>
+          <div style={{ marginBottom: 12 }}>
+            <label>Language you're learning: <input value={learningLanguage} onChange={e => setLearningLanguage(e.target.value)} placeholder="e.g. Spanish" /></label>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label>Your native language: <input value={nativeLanguage} onChange={e => setNativeLanguage(e.target.value)} placeholder="e.g. English" /></label>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label>Model: 
+              <select value={model} onChange={e => setModel(e.target.value)} style={{ marginLeft: 8, padding: 4 }}>
+                <option value="qwen2.5:7b-instruct">Qwen 2.5 7B Instruct</option>
+                <option value="llama3">Llama 3</option>
+                <option value="llama3.2">Llama 3.2</option>
+                <option value="mistral">Mistral</option>
+                <option value="gemma2">Gemma 2</option>
+                <option value="gemma3">Gemma 3</option>
+                <option value="mistral-nemo">Nemo</option>
+              </select>
+            </label>
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label>Describe the situation:</label>
+            <textarea 
+              value={situation} 
+              onChange={e => setSituation(e.target.value)} 
+              placeholder={loadingSuggestion ? "Loading suggestion..." : "e.g. Ordering food at a restaurant"} 
+              style={{ width: '100%', height: 80, padding: 8 }}
+              disabled={loadingSuggestion}
+            />
+          </div>
+          <button onClick={startSession}>Start Roleplay</button>
+        </div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 12, padding: 12, background: '#f5f5f5', borderRadius: 6, fontSize: '0.9rem', display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+            <div><strong>Learning:</strong> {learningLanguage}</div>
+            <div><strong>Native:</strong> {nativeLanguage}</div>
+            <div style={{ flex: 1 }}><strong>Situation:</strong> {situation}</div>
+            <div><strong>Model:</strong> {model}</div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 240px)', minHeight: 500 }}>
+            {/* Main chat area */}
+            <div style={{ flex: 2, display: 'flex', flexDirection: 'column' }}>
+              <div id="chat" ref={chatRef} style={{ flex: 1, border: '1px solid #ddd', padding: 12, overflowY: 'auto', background: '#fafafa', marginBottom: 12, borderRadius: 8 }}>
+                {messages.map((m, i) => (
+                  <div key={i} style={{ margin: '12px 0' }}>
+                    {m.role === 'user' ? (
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ display: 'inline-block', padding: '8px 12px', borderRadius: 6, background: '#646cff', color: 'white', maxWidth: '70%' }}>{m.text}</div>
+                      </div>
+                    ) : (
+                      <div style={{ maxWidth: '70%' }}>
+                        {m.reply && (
+                          <div style={{ padding: 10, background: '#fff', borderRadius: 6, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                            <div>{m.reply}</div>
+                            <div style={{ marginTop: 8 }}>
+                              <button onClick={() => speakText(m.reply, learningLanguage)} style={{ padding: '4px 8px' }}>▶️ Play voice</button>
+                            </div>
+                            {m.translation && (
+                              <button 
+                                onClick={() => setShowTranslations(prev => ({ ...prev, [i]: !prev[i] }))}
+                                style={{ marginTop: 8, padding: '4px 8px', fontSize: '0.85rem', background: '#4CAF50' }}
+                              >
+                                {showTranslations[i] ? '🔼 Hide translation' : '🔽 Show translation'}
+                              </button>
+                            )}
+                            {showTranslations[i] && m.translation && (
+                              <div style={{ marginTop: 8, padding: 8, background: '#f0f8e8', borderLeft: '3px solid #4CAF50', borderRadius: 4, fontSize: '0.9rem' }}>
+                                <strong style={{ fontSize: '0.8rem', textTransform: 'uppercase', color: '#388E3C' }}>Translation:</strong>
+                                <div>{m.translation}</div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {m.status === 'loading' && !m.reply && (
+                          <div style={{ fontStyle: 'italic', color: '#666', padding: 10 }}>Generating response...</div>
+                        )}
+                        {m.status === 'error' && (
+                          <div style={{ color: '#d32f2f', padding: 10 }}>Error: {m.error}</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input value={text} onChange={e => setText(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Type or press 🎙️ and speak" disabled={loading} style={{ flex: 1, padding: 10 }} />
+                {!isListening ? (
+                  <button onClick={startListening} title="Speak" style={{ padding: '10px 12px' }}>🎙️</button>
+                ) : (
+                  <button onClick={stopListening} title="Stop" style={{ padding: '10px 12px' }}>⏹️</button>
+                )}
+                <button onClick={send} disabled={loading} style={{ padding: '10px 20px', cursor: loading ? 'not-allowed' : 'pointer' }}>
+                  {loading ? 'Sending...' : 'Send'}
+                </button>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input type="checkbox" checked={autoplayVoice} onChange={e => setAutoplayVoice(e.target.checked)} />
+                  Autoplay voice
+                </label>
+              </div>
+            </div>
+
+            {/* Feedback sidebar */}
+            <div style={{ flex: 1, border: '1px solid #ddd', borderRadius: 8, padding: 16, background: '#fff8e1', overflowY: 'auto' }}>
+              <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', color: '#F57C00' }}>📝 Feedback</h3>
+              {messages.filter(m => m.role === 'assistant' && m.feedback).length === 0 ? (
+                <p style={{ color: '#999', fontStyle: 'italic' }}>Feedback will appear here after you send messages</p>
+              ) : (
+                messages.map((m, i) => {
+                  if (m.role === 'assistant' && m.feedback) {
+                    // Find corresponding user message
+                    const userMsg = messages[i - 1]
+                    return (
+                      <div key={i} style={{ marginBottom: 16, padding: 10, background: 'white', borderRadius: 6, boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
+                        <div style={{ fontSize: '0.85rem', color: '#666', marginBottom: 4, fontStyle: 'italic' }}>
+                          On: "{userMsg?.text}"
+                        </div>
+                        <div style={{ fontSize: '0.95rem' }}>{m.feedback}</div>
+                      </div>
+                    )
+                  }
+                  return null
+                })
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
